@@ -218,10 +218,7 @@ def _parse(encoded_data, data_len, pointer=0, lengths_only=False, depth=0):
             # would not work.
             if not constructed:
                 raise ValueError('Indefinite-length element must be constructed')
-            contents_end = pointer
-            while data_len < contents_end + 2 or encoded_data[contents_end:contents_end+2] != b'\x00\x00':
-                _, contents_end = _parse(encoded_data, data_len, contents_end, lengths_only=True, depth=depth+1)
-            contents_end += 2
+            contents_end = _skip_indefinite_contents(encoded_data, data_len, pointer, depth + 1)
             trailer = b'\x00\x00'
 
     if contents_end > data_len:
@@ -241,6 +238,73 @@ def _parse(encoded_data, data_len, pointer=0, lengths_only=False, depth=0):
         ),
         contents_end
     )
+
+
+def _skip_indefinite_contents(encoded_data, data_len, pointer, depth):
+    """
+    Advances the pointer over an indefinite-length content region.
+    """
+
+    open_indefinite = 1
+    while open_indefinite:
+        if depth + open_indefinite - 1 > _MAX_DEPTH:
+            raise ValueError('Indefinite-length recursion limit exceeded')
+
+        if data_len < pointer + 2:
+            raise ValueError(_INSUFFICIENT_DATA_MESSAGE % (2, data_len - pointer))
+
+        if encoded_data[pointer:pointer+2] == b'\x00\x00':
+            pointer += 2
+            open_indefinite -= 1
+            continue
+
+        if data_len < pointer + 1:
+            raise ValueError(_INSUFFICIENT_DATA_MESSAGE % (1, data_len - pointer))
+        first_octet = ord(encoded_data[pointer]) if _PY2 else encoded_data[pointer]
+        pointer += 1
+
+        tag = first_octet & 31
+        if tag == 31:
+            tag = 0
+            while True:
+                if data_len < pointer + 1:
+                    raise ValueError(_INSUFFICIENT_DATA_MESSAGE % (1, data_len - pointer))
+                num = ord(encoded_data[pointer]) if _PY2 else encoded_data[pointer]
+                pointer += 1
+                if num == 0x80 and tag == 0:
+                    raise ValueError('Non-minimal tag encoding')
+                tag *= 128
+                tag += num & 127
+                if num >> 7 == 0:
+                    break
+            if tag < 31:
+                raise ValueError('Non-minimal tag encoding')
+
+        if data_len < pointer + 1:
+            raise ValueError(_INSUFFICIENT_DATA_MESSAGE % (1, data_len - pointer))
+        length_octet = ord(encoded_data[pointer]) if _PY2 else encoded_data[pointer]
+        pointer += 1
+
+        if length_octet >> 7 == 0:
+            pointer += (length_octet & 127)
+
+        else:
+            length_octets = length_octet & 127
+            if length_octets:
+                if data_len < pointer + length_octets:
+                    raise ValueError(_INSUFFICIENT_DATA_MESSAGE % (length_octets, data_len - pointer))
+                pointer += length_octets
+                pointer += int_from_bytes(encoded_data[pointer - length_octets:pointer], signed=False)
+
+            else:
+                if ((first_octet >> 5) & 1) == 0:
+                    raise ValueError('Indefinite-length element must be constructed')
+                open_indefinite += 1
+
+        if pointer > data_len:
+            raise ValueError(_INSUFFICIENT_DATA_MESSAGE % (pointer - data_len, data_len - pointer))
+
+    return pointer
 
 
 def _dump_header(class_, method, tag, contents):

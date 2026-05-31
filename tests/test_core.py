@@ -1348,6 +1348,23 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(1, b.native)
         self.assertEqual(b'\x04\x04\x00\x00\x00\x01', b.dump())
 
+    def test_sequence_native_deep_nesting(self):
+        encoded = b'\x30\x00'
+        for _ in range(1200):
+            wrapper = core.Sequence()
+            wrapper.contents = encoded
+            encoded = wrapper.dump()
+
+        parsed = core.Sequence.load(encoded)
+        current = parsed.native
+        self.assertIsInstance(current, util.OrderedDict)
+
+        for _ in range(1200):
+            self.assertEqual(1, len(current))
+            current = current['0']
+
+        self.assertEqual(util.OrderedDict(), current)
+
     @staticmethod
     def object_identifier_info():
         return (

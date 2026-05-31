@@ -3985,7 +3985,7 @@ class Sequence(Asn1Value):
                 if recurse:
                     child = _build(*child)
                     if isinstance(child, (Sequence, SequenceOf)):
-                        child._parse_children(recurse=True)
+                        _parse_children_recursive(child)
 
                 self.children.append(child)
                 field += 1
@@ -4066,19 +4066,8 @@ class Sequence(Asn1Value):
             return None
 
         if self._native is None:
-            if self.children is None:
-                self._parse_children(recurse=True)
             try:
-                self._native = OrderedDict()
-                for index, child in enumerate(self.children):
-                    if child.__class__ == tuple:
-                        child = _build(*child)
-                        self.children[index] = child
-                    try:
-                        name = self._fields[index][0]
-                    except (IndexError):
-                        name = str_cls(index)
-                    self._native[name] = child.native
+                _set_native_recursive(self)
             except (ValueError, TypeError) as e:
                 self._native = None
                 args = e.args[1:]
@@ -4518,7 +4507,7 @@ class SequenceOf(Asn1Value):
                 if recurse:
                     child = _build(*child)
                     if isinstance(child, (Sequence, SequenceOf)):
-                        child._parse_children(recurse=True)
+                        _parse_children_recursive(child)
                 self.children.append(child)
         except (ValueError, TypeError) as e:
             self.children = None
@@ -4551,10 +4540,8 @@ class SequenceOf(Asn1Value):
             return None
 
         if self._native is None:
-            if self.children is None:
-                self._parse_children(recurse=True)
             try:
-                self._native = [child.native for child in self]
+                _set_native_recursive(self)
             except (ValueError, TypeError) as e:
                 args = e.args[1:]
                 e.args = (e.args[0] + '\n    while parsing %s' % type_name(self),) + args
@@ -4722,7 +4709,7 @@ class Set(Sequence):
                 if recurse:
                     child = _build(*child)
                     if isinstance(child, (Sequence, SequenceOf)):
-                        child._parse_children(recurse=True)
+                        _parse_children_recursive(child)
 
                 child_map[field] = child
                 seen_field += 1
@@ -5429,6 +5416,73 @@ _UNIVERSAL_SPECS = {
     29: CharacterString,
     30: BMPString
 }
+
+
+def _parse_children_recursive(value):
+    """
+    Parses children for all nested Sequence and SequenceOf values iteratively.
+    """
+
+    stack = [value]
+    while stack:
+        current = stack.pop()
+        current._parse_children(recurse=False)
+        for index, child in enumerate(current.children):
+            if child.__class__ == tuple:
+                child = _build(*child)
+                current.children[index] = child
+            if isinstance(child, (Sequence, SequenceOf)):
+                stack.append(child)
+
+
+def _set_native_recursive(value):
+    """
+    Computes native values for nested Sequence and SequenceOf values iteratively.
+    """
+
+    stack = [(value, False)]
+    while stack:
+        current, visited = stack.pop()
+
+        if current._native is not None:
+            continue
+
+        if current._contents is None and current.children is None:
+            continue
+
+        if current.children is None:
+            current._parse_children(recurse=False)
+
+        if not visited:
+            stack.append((current, True))
+            for index, child in enumerate(current.children):
+                if child.__class__ == tuple:
+                    child = _build(*child)
+                    current.children[index] = child
+                if isinstance(child, (Sequence, SequenceOf)) and child._native is None:
+                    stack.append((child, False))
+            continue
+
+        if isinstance(current, Sequence):
+            native = OrderedDict()
+            for index, child in enumerate(current.children):
+                try:
+                    name = current._fields[index][0]
+                except (IndexError):
+                    name = str_cls(index)
+                if isinstance(child, (Sequence, SequenceOf)) and child._native is not None:
+                    native[name] = child._native
+                else:
+                    native[name] = child.native
+            current._native = native
+        else:
+            native = []
+            for child in current.children:
+                if isinstance(child, (Sequence, SequenceOf)) and child._native is not None:
+                    native.append(child._native)
+                else:
+                    native.append(child.native)
+            current._native = native
 
 
 def _build(class_, method, tag, header, contents, trailer, spec=None, spec_params=None, nested_spec=None):
